@@ -2,7 +2,7 @@
 extern crate neon;
 extern crate reconfix;
 
-use neon::vm::{Call, JsResult};
+use neon::vm::{Call, JsResult, Lock};
 use neon::js::{JsString, JsNumber, JsObject, JsFunction, JsNull};
 use neon::mem::Handle;
 use neon::scope::{Scope, RootScope, ChainedScope};
@@ -11,6 +11,8 @@ use std::io;
 use std::mem;
 use std::result;
 use std::error;
+use std::cell::RefCell;
+use std::ops::DerefMut;
 
 use reconfix::{Reconfix, Plugin, FileNode, Content};
 
@@ -20,9 +22,9 @@ struct CallbackPlugin<'a>
     callback: Handle<'a, JsFunction>,
 }
 
-impl<'a, 'b> Plugin<'a, 'b, StreamWrapper<'b>> for CallbackPlugin<'a>
+impl<'a> Plugin<'a, 'a, StreamWrapper<'a>> for CallbackPlugin<'a>
 {
-    fn open(&'a mut self, file: &FileNode) -> result::Result<StreamWrapper<'b>, Box<error::Error + Send + Sync>> {
+    fn open(&'a mut self, file: &FileNode) -> result::Result<StreamWrapper<'a>, Box<error::Error + Send + Sync>> {
         let partition = JsNumber::new(self.scope, file.partition.num() as f64);
         let path = &file.path;
 
@@ -31,7 +33,7 @@ impl<'a, 'b> Plugin<'a, 'b, StreamWrapper<'b>> for CallbackPlugin<'a>
             .map_err(|e| Box::new(e))?;
 
         let wrapper = StreamWrapper {
-            scope: self.scope,
+            plugin: self,
             stream: stream,
         };
 
@@ -41,7 +43,7 @@ impl<'a, 'b> Plugin<'a, 'b, StreamWrapper<'b>> for CallbackPlugin<'a>
 
 struct StreamWrapper<'a>
 {
-    scope: &'a mut RootScope<'a>,
+    plugin: &'a mut CallbackPlugin<'a>,
     stream: Handle<'a, JsObject>,
 }
 
@@ -86,6 +88,15 @@ declare_types! {
                 //plugin: plugin,
                 reconfix: reconfix,
             })
+        }
+
+        method read_values(call) {
+            let scope = call.scope;
+            let callback = call.arguments.require(scope, 0)?.check::<JsFunction>()?;
+            let reconfix = call.arguments.this(scope).grab(|w| w.reconfix);
+            let plugin = CallbackPlugin { scope: scope, callback: callback };
+            let result = reconfix.read_values_plugin(plugin);
+            Ok(JsNull::new().upcast())
         }
     }
 }
